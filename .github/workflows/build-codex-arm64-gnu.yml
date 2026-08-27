@@ -1,0 +1,109 @@
+name: Build Codex ARM64 GNU
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout OpenAI Codex 0.150.1
+        uses: actions/checkout@v6
+        with:
+          repository: openai/codex
+          ref: rust-v0.150.1
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            binutils \
+            pkg-config \
+            libcap-dev \
+            libssl-dev \
+            clang \
+            cmake \
+            python3 \
+            ca-certificates
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Configure OpenAI rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: aarch64-unknown-linux-gnu
+
+      - name: Build bundled bubblewrap
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="aarch64-unknown-linux-gnu"
+
+          cargo build \
+            --target "$TARGET" \
+            --release \
+            --bin bwrap
+
+          BWRAP="target/$TARGET/release/bwrap"
+
+          strip --strip-debug --strip-unneeded "$BWRAP"
+
+          DIGEST="$(sha256sum "$BWRAP" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=$DIGEST" >> "$GITHUB_ENV"
+
+      - name: Build Codex GNU ARM64
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo build \
+            --target aarch64-unknown-linux-gnu \
+            --release \
+            --bin codex \
+            --bin codex-code-mode-host
+
+      - name: Prepare package
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET="aarch64-unknown-linux-gnu"
+
+          mkdir -p \
+            codex-gnu/bin \
+            codex-gnu/codex-resources
+
+          cp "target/$TARGET/release/codex" \
+            codex-gnu/bin/codex
+
+          cp "target/$TARGET/release/codex-code-mode-host" \
+            codex-gnu/bin/codex-code-mode-host
+
+          cp "target/$TARGET/release/bwrap" \
+            codex-gnu/codex-resources/bwrap
+
+          chmod +x \
+            codex-gnu/bin/codex \
+            codex-gnu/bin/codex-code-mode-host \
+            codex-gnu/codex-resources/bwrap
+
+          ./codex-gnu/bin/codex --version
+
+      - name: Upload GNU ARM64 Codex
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-arm64-gnu-0.150.1
+          path: codex-rs/codex-gnu/
